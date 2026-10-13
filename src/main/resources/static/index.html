@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Голубки и Розочки</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin-top: 40px;
+            background-image: url('/image.jpg');
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            background-attachment: fixed;
+            min-height: 100vh;
+        }
+        table { border-collapse: collapse; margin: 20px auto; }
+        td {
+            width: 80px; height: 80px;
+            text-align: center; vertical-align: middle;
+            font-size: 48px; font-weight: bold; cursor: pointer; user-select: none;
+            border: 2px solid #333;
+        }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; margin: 4px; }
+        .hidden { display: none; }
+        .panel { margin-top: 20px; }
+        #status-line { min-height: 24px; color: #555; margin: 10px 0; }
+    </style>
+</head>
+<body>
+
+<div style="text-align: center; margin-bottom: 20px;">
+    <span style="color: deepskyblue; font-size: 48px;">Голубки</span>
+    <span style="font-size: 36px;"> и</span>
+    <span style="color: hotpink; font-size: 48px;">Розочки</span>
+    <br><br><br>
+</div>
+
+<div id="start-panel" class="panel">
+    <br><br><br>
+    <button id="registration">Регистрация</button>
+    <br>
+    <button id="authorization">Авторизация</button>
+</div>
+
+<div id="form-panel" class="panel hidden">
+    <br><br><br>
+    <h3 id="form-title"></h3>
+    <input type="text" id="login-input" placeholder="Логин" aria-label="Логин">
+    <br><br>
+    <input type="password" id="pass-input" placeholder="Пароль" aria-label="Пароль">
+    <br><br>
+    <button id="back-to-menu-btn">Назад</button>
+    <button id="submit-auth-btn">Готово</button>
+    <div id="auth-message" style="margin-top: 10px; min-height: 20px; color: #b00;"></div>
+</div>
+
+<div id="game-panel" class="panel hidden">
+    <br><br><br>
+    <div id="status-line"></div>
+    <table id="game-board"></table>
+    <button id="new-game-btn1">Новая битва PvE</button>
+    <br>
+    <button id="new-game-btn2">Новая битва PvP</button>
+    <br>
+    <button id="history-btn">История битв</button>
+    <br>
+    <button id="leaderboard-btn">Таблица лидеров</button>
+    <br><br>
+    <button id="logout-btn">Выйти в меню</button>
+</div>
+
+<div id="pvp-lobby-panel" class="panel hidden">
+    <br><br><br>
+    <div id="status-line-pvp" style="min-height:24px;color:#555;margin:10px 0;"></div>
+    <h3>Доступные битвы</h3>
+    <div id="available-games"></div>
+    <br>
+    <button id="create-lobby-btn">Создать свою битву</button>
+    <br><br>
+    <button id="back-to-game-menu-btn">Назад</button>
+</div>
+
+<div id="history-panel" class="panel hidden">
+    <br><br><br>
+    <h3>История битв</h3>
+    <div id="history-status" style="min-height:24px;color:#555;margin:10px 0;"></div>
+    <div id="history-list"></div>
+    <br>
+    <button id="back-from-history-btn">Назад</button>
+</div>
+
+<div id="leaderboard-panel" class="panel hidden">
+    <br><br><br>
+    <h3>Таблица лидеров</h3>
+    <div style="margin-bottom:10px;">
+        <label for="leaderboard-n">Показать топ:</label>
+        <select id="leaderboard-n">
+            <option value="5">5</option>
+            <option value="10" selected>10</option>
+            <option value="20">20</option>
+            <option value="50">50</option>
+        </select>
+    </div>
+    <div id="leaderboard-status" style="min-height:24px;color:#555;margin:10px 0;"></div>
+    <div id="leaderboard-list"></div>
+    <br>
+    <button id="back-from-leaderboard-btn">Назад</button>
+</div>
+
+<script>
+    let currentGameId = null;
+    let currentMode = null;
+    let pvpPollTimer = null;
+    let currentUser = null;
+    let pvpListTimer = null;
+
+    window.accessToken = null;
+    window.refreshToken = null;
+
+    async function authFetch(url, options = {}) {
+        options.headers = options.headers || {};
+        if (window.accessToken) {
+            options.headers['Authorization'] = 'Bearer ' + window.accessToken;
+        }
+        let response = await fetch(url, options);
+        if (response.status === 401 && window.refreshToken) {
+            const refreshed = await refreshAccessToken();
+            if (refreshed) {
+                options.headers['Authorization'] = 'Bearer ' + window.accessToken;
+                response = await fetch(url, options);
+            }
+        }
+        return response;
+    }
+
+    async function refreshAccessToken() {
+        try {
+            const r = await fetch('/auth/token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ refreshToken: window.refreshToken })
+            });
+            if (!r.ok) return false;
+            const data = await r.json();
+            window.accessToken = data.accessToken;
+            if (data.refreshToken) window.refreshToken = data.refreshToken;
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function renderBoard(boardData) {
+        const boardEl = document.getElementById('game-board');
+        boardEl.innerHTML = '';
+        if (!boardData) return;
+        boardData.forEach((rowList, rowIndex) => {
+            const tr = document.createElement('tr');
+            if (!rowList) { boardEl.appendChild(tr); return; }
+            rowList.forEach((cellValue, colIndex) => {
+                const td = document.createElement('td');
+                td.className = 'cell';
+                if (cellValue === "X") {
+                    td.textContent = 'X';
+                    td.style.color = 'deepskyblue';
+                } else if (cellValue === "O") {
+                    td.textContent = 'O';
+                    td.style.color = 'hotpink';
+                }
+                td.dataset.row = rowIndex;
+                td.dataset.col = colIndex;
+                tr.appendChild(td);
+            });
+            boardEl.appendChild(tr);
+        });
+    }
+
+    function disableBoard() {
+        document.querySelectorAll('#game-board .cell').forEach(cell => {
+            cell.style.opacity = "0.5";
+            cell.style.cursor = "not-allowed";
+            cell.style.pointerEvents = 'none';
+        });
+    }
+
+    function enableBoard() {
+        document.querySelectorAll('#game-board .cell').forEach(cell => {
+            cell.style.opacity = "1";
+            cell.style.cursor = "pointer";
+            cell.style.pointerEvents = 'auto';
+        });
+    }
+
+    function updateStatus(text) {
+        document.getElementById('status-line').textContent = text || '';
+    }
+
+    async function makeHumanMove(row, col) {
+        const gameOpt = window.gameState;
+        if (!gameOpt) return;
+        let newGrid = JSON.parse(JSON.stringify(gameOpt.board.board));
+        if (gameOpt.isAIGoesFirst) {
+            newGrid[row][col] = 'O';
+        } else {
+            newGrid[row][col] = 'X';
+        }
+        renderBoard(newGrid);
+        const payload = {
+            id: gameOpt.id,
+            board: { board: newGrid },
+            isAIGoesFirst: gameOpt.isAIGoesFirst
+        };
+        const response = await authFetch('/game/pve/move', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (!response.ok) {
+            const text = await response.text();
+            alert('Ошибка ' + response.status + ': ' + text);
+            renderBoard(gameOpt.board.board);
+            return;
+        }
+        const result = await response.json();
+        window.gameState = result.game;
+        renderBoard(result.game.board.board);
+        if (result.message !== 'null') {
+            alert(result.message);
+            disableBoard();
+        }
+    }
+
+    function handlePlayerMove(event) {
+        const cell = event.target;
+        if (!cell.classList.contains('cell')) return;
+        const row = parseInt(cell.dataset.row);
+        const col = parseInt(cell.dataset.col);
+        if (currentMode === 'pvp') {
+            const g = window.gameState;
+            if (!g) return;
+            const myId = String(window.myUserId || '').toLowerCase();
+            const px = String(g.playerXid || '').toLowerCase();
+            const po = String(g.playerOid || '').toLowerCase();
+            const myTurn =
+                (g.status === 'PLAYER_X_TURN' && px === myId) ||
+                (g.status === 'PLAYER_O_TURN' && po === myId);
+            if (!myTurn) return;
+            sendPvpMove(row, col);
+            return;
+        }
+        makeHumanMove(row, col);
+    }
+
+    async function createNewGame() {
+        stopPvpPolling();
+        currentMode = 'pve';
+        updateStatus('Партия PvE');
+        const response = await authFetch('/game/pve/', { method: 'POST' });
+        if (!response.ok) {
+            const text = await response.text();
+            console.error('PVE create failed:', response.status, text);
+            updateStatus('Ошибка ' + response.status + ': ' + text);
+            return;
+        }
+        const data = await response.json();
+        if (!data.board || !data.board.board) {
+            console.error('Unexpected response shape:', data);
+            updateStatus('Некорректный ответ сервера');
+            return;
+        }
+        currentGameId = data.id;
+        window.gameState = data;
+        renderBoard(data.board.board);
+        enableBoard();
+    }
+
+    async function createLobby() {
+        stopPvpLobbyPolling();
+        const response = await authFetch('/game/pvp/', { method: 'POST' });
+        if (!response.ok) {
+            const text = await response.text();
+            document.getElementById('status-line-pvp').textContent =
+                'Ошибка ' + response.status + ': ' + text;
+            return;
+        }
+        const game = await response.json();
+        currentGameId = game.id;
+        window.gameState = game;
+        document.getElementById('status-line-pvp').textContent =
+            'Лобби создано: ' + game.id.substring(0, 8) + '. Ждём соперника...';
+        await refreshAvailableGames();
+        startPvpPolling();
+    }
+
+    function startPvpPolling() {
+        stopPvpPolling();
+        pvpPollTimer = setInterval(checkPvpState, 1500);
+        checkPvpState();
+    }
+
+    function stopPvpPolling() {
+        if (pvpPollTimer) {
+            clearInterval(pvpPollTimer);
+            pvpPollTimer = null;
+        }
+    }
+
+    async function checkPvpState() {
+        if (!currentGameId || currentMode !== 'pvp') return;
+        try {
+            const response = await authFetch('/game/pvp/' + currentGameId);
+            if (!response.ok) return;
+            const data = await response.json();
+            window.gameState = data;
+            if (data.board && data.board.board) {
+                renderBoard(data.board.board);
+            }
+            const status = data.status;
+            const finished = status === 'PLAYER_X_WON'
+                || status === 'PLAYER_O_WON'
+                || status === 'DRAW';
+            if (finished) {
+                stopPvpPolling();
+                disableBoard();
+                let msg = 'Игра завершена';
+                if (status === 'PLAYER_X_WON') msg = 'Голубки побеждают!';
+                if (status === 'PLAYER_O_WON') msg = 'Розочки побеждают!';
+                if (status === 'DRAW') msg = 'Ничья!';
+                updateStatus(msg);
+                return;
+            }
+            if (status === 'WAITING_FOR_PLAYERS' || !status) {
+                updateStatus('Ожидание соперника...');
+                disableBoard();
+                return;
+            }
+            showPanel('game-panel');
+            const me = String(window.myUserId || '').toLowerCase();
+            const px = String(data.playerXid || '').toLowerCase();
+            const po = String(data.playerOid || '').toLowerCase();
+            const myTurn =
+                (status === 'PLAYER_X_TURN' && px === me) ||
+                (status === 'PLAYER_O_TURN' && po === me);
+            updateStatus(myTurn ? 'Ваш ход' : 'Ход соперника');
+            if (myTurn) enableBoard(); else disableBoard();
+        } catch (e) {
+            console.warn('[pvp poll] error:', e);
+        }
+    }
+
+    async function sendPvpMove(row, col) {
+        const gameOpt = window.gameState;
+        if (!gameOpt) return;
+        const newGrid = JSON.parse(JSON.stringify(gameOpt.board.board));
+        newGrid[row][col] = (gameOpt.playerXid === window.myUserId) ? 'X' : 'O';
+        renderBoard(newGrid);
+        disableBoard();
+        const payload = {
+            id: gameOpt.id,
+            board: { board: newGrid },
+            isAIGoesFirst: false
+        };
+        const response = await authFetch('/game/pvp/move', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (!response.ok) {
+            const text = await response.text();
+            alert('Ошибка ' + response.status + ': ' + text);
+            renderBoard(gameOpt.board.board);
+            enableBoard();
+            return;
+        }
+        const result = await response.json();
+        window.gameState = result.game || result;
+        if (window.gameState.board && window.gameState.board.board) {
+            renderBoard(window.gameState.board.board);
+        }
+    }
+
+    function showPanel(panelId) {
+        document.querySelectorAll('.panel').forEach(p => p.classList.add('hidden'));
+        const panel = document.getElementById(panelId);
+        if (panel) panel.classList.remove('hidden');
+    }
+
+    function openAuthForm(e) {
+        const btn = e.currentTarget;
+        const titleEl = document.getElementById('form-title');
+        titleEl.innerText = btn.id === 'registration' ? 'Регистрация' : 'Авторизация';
+        document.getElementById('login-input').value = '';
+        document.getElementById('pass-input').value = '';
+        document.getElementById('auth-message').innerText = '';
+        showPanel('form-panel');
+    }
+
+    function showStart() {
+        stopPvpPolling();
+        stopPvpLobbyPolling();
+        currentMode = null;
+        currentGameId = null;
+        window.gameState = null;
+        updateStatus('');
+        showPanel('start-panel');
+    }
+
+    async function submitAuthForm() {
+        const login = document.getElementById('login-input').value.trim();
+        const pass  = document.getElementById('pass-input').value;
+        const action = document.getElementById('form-title').innerText;
+        const msgEl = document.getElementById('auth-message');
+        msgEl.innerText = '';
+        if (!login || !pass) {
+            msgEl.innerText = 'Введите логин и пароль';
+            return;
+        }
+        try {
+            if (action === 'Регистрация') {
+                const response = await fetch('/auth/', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ login, password: pass })
+                });
+                if (!response.ok) {
+                    const text = await response.text();
+                    msgEl.innerText = response.status + ': ' + text;
+                    return;
+                }
+                showStart();
+                return;
+            }
+
+            const response = await fetch('/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ login, password: pass })
+            });
+            if (!response.ok) {
+                const text = await response.text();
+                msgEl.innerText = response.status + ': ' + text;
+                return;
+            }
+            const data = await response.json();
+            window.accessToken = data.accessToken;
+            window.refreshToken = data.refreshToken;
+            currentUser = login;
+
+            const meResp = await authFetch('/auth/me');
+            if (meResp.ok) {
+                const me = await meResp.json();
+                window.myUserId = me.userId;
+            }
+
+            showPanel('game-panel');
+            updateStatus('Выберите режим игры');
+        } catch (e) {
+            msgEl.innerText = 'Ошибка доступа: ' + e.message;
+        }
+    }
+
+    async function showPvpLobby() {
+        showPanel('pvp-lobby-panel');
+        currentMode = 'pvp';
+        document.getElementById('status-line-pvp').textContent = 'Загрузка...';
+        await refreshAvailableGames();
+        if (pvpListTimer) clearInterval(pvpListTimer);
+        pvpListTimer = setInterval(refreshAvailableGames, 2000);
+    }
+
+    function stopPvpLobbyPolling() {
+        if (pvpListTimer) {
+            clearInterval(pvpListTimer);
+            pvpListTimer = null;
+        }
+    }
+
+    async function refreshAvailableGames() {
+        try {
+            const response = await authFetch('/game/pvp/available');
+            if (!response.ok) {
+                document.getElementById('status-line-pvp').textContent =
+                    'Ошибка ' + response.status;
+                return;
+            }
+            const games = await response.json();
+            const listEl = document.getElementById('available-games');
+            listEl.innerHTML = '';
+            if (games.length === 0) {
+                listEl.textContent = 'Пока никто не создал лобби.';
+            }
+            games.forEach(g => {
+                const btn = document.createElement('button');
+                btn.textContent = 'Присоединиться к ' + g.id.substring(0, 8);
+                btn.onclick = () => joinGame(g);
+                listEl.appendChild(btn);
+                listEl.appendChild(document.createElement('br'));
+            });
+            document.getElementById('status-line-pvp').textContent =
+                'Найдено лобби: ' + games.length;
+        } catch (e) {
+            document.getElementById('status-line-pvp').textContent = 'Ошибка сети';
+        }
+    }
+
+    async function joinGame(game) {
+        const response = await authFetch('/game/pvp/join', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(game)
+        });
+        if (!response.ok) {
+            const text = await response.text();
+            alert('Ошибка ' + response.status + ': ' + text);
+            return;
+        }
+        const joined = await response.json();
+        currentGameId = joined.id;
+        window.gameState = joined;
+        currentMode = 'pvp';
+        stopPvpLobbyPolling();
+        showPanel('game-panel');
+        renderBoard(joined.board.board);
+        startPvpPolling();
+    }
+
+    async function showHistory() {
+        showPanel('history-panel');
+        document.getElementById('history-status').textContent = 'Загрузка...';
+        document.getElementById('history-list').innerHTML = '';
+
+        const response = await authFetch('/game/pvp/history');
+        if (!response.ok) {
+            document.getElementById('history-status').textContent =
+                'Ошибка ' + response.status;
+            return;
+        }
+        const games = await response.json();
+
+        if (games.length === 0) {
+            document.getElementById('history-status').textContent =
+                'У вас пока нет завершённых игр.';
+            return;
+        }
+        document.getElementById('history-status').textContent =
+            'Всего игр: ' + games.length;
+
+        const listEl = document.getElementById('history-list');
+        games.forEach(g => listEl.appendChild(renderHistoryItem(g)));
+    }
+
+    function outcomeForMe(game, myUserId) {
+        const me = String(myUserId || '').toLowerCase();
+        const px = String(game.playerXid || '').toLowerCase();
+        const po = String(game.playerOid || '').toLowerCase();
+
+        if (game.status === 'DRAW') return { text: 'Ничья', color: '#888' };
+        if (game.status === 'PLAYER_X_WON') {
+            return px === me
+                ? { text: 'Победа (X)', color: '#1a8' }
+                : { text: 'Поражение (O)', color: '#c33' };
+        }
+        if (game.status === 'PLAYER_O_WON') {
+            return po === me
+                ? { text: 'Победа (O)', color: '#1a8' }
+                : { text: 'Поражение (X)', color: '#c33' };
+        }
+        return { text: 'Неизвестно', color: '#888' };
+    }
+
+    function renderHistoryItem(game) {
+        const result = outcomeForMe(game, window.myUserId);
+
+        const row = document.createElement('div');
+        row.style.cssText =
+            'display:flex;justify-content:space-between;align-items:center;' +
+            'max-width:520px;margin:6px auto;padding:10px 14px;' +
+            'background:rgba(255,255,255,0.9);border-radius:10px;' +
+            'box-shadow:0 2px 6px rgba(0,0,0,0.1);';
+
+        const left = document.createElement('div');
+        left.style.textAlign = 'left';
+        left.innerHTML =
+            '<div style="font-weight:bold;color:' + result.color + '">' +
+            result.text + '</div>' +
+            '<div style="font-size:12px;color:#666">' +
+            'Игра #' + game.id.substring(0, 8) + '</div>';
+
+        const right = document.createElement('div');
+        right.style.textAlign = 'right';
+        right.style.fontSize = '12px';
+        right.style.color = '#666';
+        right.textContent = formatDate(game.createdAt);
+
+        row.appendChild(left);
+        row.appendChild(right);
+        return row;
+    }
+
+    function formatDate(iso) {
+        if (!iso) return '';
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return iso;
+        const pad = n => String(n).padStart(2, '0');
+        return pad(d.getDate()) + '.' + pad(d.getMonth() + 1) + '.' + d.getFullYear() +
+            ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    }
+
+    async function showLeaderboard() {
+        showPanel('leaderboard-panel');
+        const n = parseInt(document.getElementById('leaderboard-n').value, 10) || 10;
+        document.getElementById('leaderboard-status').textContent = 'Загрузка...';
+        document.getElementById('leaderboard-list').innerHTML = '';
+
+        const response = await authFetch('/game/pvp/leaderboard?n=' + n);
+        if (!response.ok) {
+            document.getElementById('leaderboard-status').textContent =
+                'Ошибка ' + response.status;
+            return;
+        }
+        const entries = await response.json();
+
+        if (entries.length === 0) {
+            document.getElementById('leaderboard-status').textContent =
+                'Пока никто не сыграл ни одной завершённой игры.';
+            return;
+        }
+        document.getElementById('leaderboard-status').textContent =
+            'Всего игроков: ' + entries.length;
+
+        const listEl = document.getElementById('leaderboard-list');
+        entries.forEach((e, index) => listEl.appendChild(buildLeaderboardRow(e, index + 1)));
+    }
+
+    function buildLeaderboardRow(entry, place) {
+        const row = document.createElement('div');
+        row.style.cssText =
+            'display:flex;justify-content:space-between;align-items:center;' +
+            'max-width:560px;margin:6px auto;padding:10px 14px;' +
+            'background:rgba(255,255,255,0.9);border-radius:10px;' +
+            'box-shadow:0 2px 6px rgba(0,0,0,0.1);';
+
+        const left = document.createElement('div');
+        left.style.cssText = 'display:flex;align-items:center;gap:10px;text-align:left;';
+
+        const placeEl = document.createElement('div');
+        placeEl.style.cssText =
+            'min-width:28px;font-weight:bold;color:#888;font-size:18px;';
+        placeEl.textContent = '#' + place;
+
+        const nameEl = document.createElement('div');
+        nameEl.innerHTML =
+            '<div style="font-weight:bold;">' + escapeHtml(entry.login) + '</div>' +
+            '<div style="font-size:12px;color:#666">' +
+            'П: ' + entry.wins + ' | Н: ' + entry.draws + ' | Пр: ' + entry.losses +
+            '</div>';
+
+        left.appendChild(placeEl);
+        left.appendChild(nameEl);
+
+        const right = document.createElement('div');
+        right.style.cssText = 'text-align:right;';
+        const rate = (entry.winRate * 100).toFixed(1) + '%';
+        right.innerHTML =
+            '<div style="font-weight:bold;color:#1a8;font-size:18px;">' + rate + '</div>' +
+            '<div style="font-size:11px;color:#888;">побед</div>';
+
+        row.appendChild(left);
+        row.appendChild(right);
+        return row;
+    }
+
+    function escapeHtml(s) {
+        return String(s)
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('"', '&quot;')
+            .replaceAll("'", '&#39;');
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        document.getElementById('registration').addEventListener('click', openAuthForm);
+        document.getElementById('authorization').addEventListener('click', openAuthForm);
+        document.getElementById('back-to-menu-btn').addEventListener('click', showStart);
+        document.getElementById('submit-auth-btn').addEventListener('click', submitAuthForm);
+        document.getElementById('new-game-btn1').addEventListener('click', createNewGame);
+        document.getElementById('new-game-btn2').addEventListener('click', showPvpLobby);
+        document.getElementById('logout-btn').addEventListener('click', showStart);
+        document.getElementById('game-board').addEventListener('click', handlePlayerMove);
+        document.getElementById('create-lobby-btn').addEventListener('click', createLobby);
+        document.getElementById('back-to-game-menu-btn').addEventListener('click', () => {
+            stopPvpLobbyPolling();
+            stopPvpPolling();
+            showPanel('game-panel');
+        });
+        document.getElementById('history-btn').addEventListener('click', showHistory);
+        document.getElementById('back-from-history-btn').addEventListener('click', () => {
+            showPanel('game-panel');
+        });
+        document.getElementById('leaderboard-btn').addEventListener('click', showLeaderboard);
+        document.getElementById('back-from-leaderboard-btn').addEventListener('click', () => {
+            showPanel('game-panel');
+        });
+        document.getElementById('leaderboard-n').addEventListener('change', showLeaderboard);
+        showPanel('start-panel');
+    });
+</script>
+</body>
+</html>
